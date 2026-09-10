@@ -97,10 +97,22 @@
     .calc-top {
       display: flex;
       flex-wrap: wrap;
-      align-items: center;
+      align-items: flex-end;
       justify-content: space-between;
       gap: 0.65rem 1rem;
       margin-bottom: 0.85rem;
+    }
+
+    .pk-rate-field {
+      min-width: 6.5rem;
+    }
+
+    .pk-rate-field input {
+      font-family: Oswald, sans-serif;
+      font-size: 1rem;
+      letter-spacing: 0.02em;
+      padding: 0.4rem 0.5rem;
+      width: 100%;
     }
 
     .calc-title {
@@ -748,6 +760,10 @@
       <div class="calc-panel" id="calc-panel">
         <div class="calc-top">
           <div class="calc-title">Quick thresholds</div>
+          <label class="field pk-rate-field">
+            <span class="unit">Peacekeeper buy rate (₽/$)</span>
+            <input type="number" id="pk-rate" min="1" step="1" value="173" />
+          </label>
           <div class="mode-toggle" role="group" aria-label="Calculator mode">
             <button type="button" id="mode-usd" class="active">USD → ₽</button>
             <button type="button" id="mode-rub">₽ → USD</button>
@@ -769,8 +785,8 @@
         <div class="calc-zones" id="calc-zones"></div>
       </div>
 
-      <p class="tier-note">
-        Buy at or under Okay (~187 ₽/$) to match Peacekeeper.
+      <p class="tier-note" id="tier-note">
+        Buy at or under Okay (~173 ₽/$) to match Peacekeeper.
         Expand a card for Excellent / Good / Okay tiers.
       </p>
       <div class="buy-guide collapsed glasses-collapsed" id="buy-guide"></div>
@@ -782,7 +798,7 @@
   <script>
     const STORAGE_KEY = "tarkov-usd-rates-v1";
     const RATE_EXCELLENT = 103;
-    const PK_BASELINE = 187;
+    const PK_BASELINE_DEFAULT = 173;
 
     const FEATURED_IDS = ["floppy", "flash", "slim-diary", "diary"];
 
@@ -1065,18 +1081,35 @@
     function load() {
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return structuredClone(DEFAULTS);
+        if (!raw) {
+          return {
+            routes: structuredClone(DEFAULTS.routes),
+            pkBaseline: PK_BASELINE_DEFAULT,
+          };
+        }
         const data = JSON.parse(raw);
+        const pk = Number(data.pkBaseline);
         return {
           routes: Array.isArray(data.routes) ? data.routes : structuredClone(DEFAULTS.routes),
+          pkBaseline:
+            Number.isFinite(pk) && pk > 0 ? Math.round(pk) : PK_BASELINE_DEFAULT,
         };
       } catch {
-        return structuredClone(DEFAULTS);
+        return {
+          routes: structuredClone(DEFAULTS.routes),
+          pkBaseline: PK_BASELINE_DEFAULT,
+        };
       }
     }
 
     function save(state) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          routes: state.routes,
+          pkBaseline,
+        })
+      );
     }
 
     function fmt(n, digits = 2) {
@@ -1125,6 +1158,7 @@
     }
 
     let state = load();
+    let pkBaseline = state.pkBaseline;
 
     function ensureCatalogRoutes() {
       let changed = false;
@@ -1147,6 +1181,8 @@
     ensureCatalogRoutes();
 
     const buyGuideEl = document.getElementById("buy-guide");
+    const tierNoteEl = document.getElementById("tier-note");
+    const pkRateEl = document.getElementById("pk-rate");
     const calcAmountEl = document.getElementById("calc-amount");
     const calcSliderEl = document.getElementById("calc-slider");
     const calcZonesEl = document.getElementById("calc-zones");
@@ -1175,12 +1211,12 @@
     }
 
     function zonesFromUsd(usd) {
-      return buyZonesForItem(usd, PK_BASELINE);
+      return buyZonesForItem(usd, pkBaseline);
     }
 
     function zonesFromRubles(rubles) {
       const excellent = Math.ceil(rubles / RATE_EXCELLENT);
-      const ok = Math.ceil(rubles / PK_BASELINE);
+      const ok = Math.ceil(rubles / pkBaseline);
       return [
         {
           kind: "excellent",
@@ -1192,15 +1228,31 @@
           kind: "good",
           label: "Good",
           price: `$${fmt(ok, 0)} – $${fmt(Math.max(ok, excellent - 1), 0)}`,
-          rate: `up to ${PK_BASELINE} ₽/$`,
+          rate: `up to ${pkBaseline} ₽/$`,
         },
         {
           kind: "ok",
           label: "Okay",
           price: `$${fmt(ok, 0)}`,
-          rate: `= PK (${PK_BASELINE} ₽/$)`,
+          rate: `= PK (${pkBaseline} ₽/$)`,
         },
       ];
+    }
+
+    function updateTierNote() {
+      tierNoteEl.textContent = `Buy at or under Okay (~${pkBaseline} ₽/$) to match Peacekeeper. Expand a card for Excellent / Good / Okay tiers.`;
+    }
+
+    function setPkBaseline(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) return;
+      pkBaseline = Math.round(n);
+      state.pkBaseline = pkBaseline;
+      save(state);
+      pkRateEl.value = String(pkBaseline);
+      updateTierNote();
+      renderCalcZones();
+      renderBuyGuide();
     }
 
     function applyCalcRange() {
@@ -1264,8 +1316,22 @@
     }
 
     function wireCalc() {
+      pkRateEl.value = String(pkBaseline);
+      updateTierNote();
       applyCalcRange();
       setCalcAmount(calcAmount);
+
+      pkRateEl.addEventListener("change", () => {
+        setPkBaseline(pkRateEl.value);
+      });
+
+      pkRateEl.addEventListener("input", () => {
+        const n = Number(pkRateEl.value);
+        if (!Number.isFinite(n) || n <= 0) return;
+        pkBaseline = Math.round(n);
+        updateTierNote();
+        renderCalcZones();
+      });
 
       modeUsdBtn.addEventListener("click", () => setCalcMode("usd"));
       modeRubBtn.addEventListener("click", () => setCalcMode("rub"));
@@ -1294,8 +1360,8 @@
 
     function renderCard(item, extraClass) {
       const usd = catalogUsd(item);
-      const breakeven = Math.floor(usd * PK_BASELINE);
-      const zones = buyZonesForItem(usd, PK_BASELINE);
+      const breakeven = Math.floor(usd * pkBaseline);
+      const zones = buyZonesForItem(usd, pkBaseline);
       return `
         <article class="buy-card${extraClass ? ` ${extraClass}` : ""}" data-id="${escapeHtml(item.id)}">
           <div class="buy-card-head">
